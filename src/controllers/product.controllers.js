@@ -43,7 +43,7 @@ const createProduct = asyncHandler(async (req, res) => {
 });
 
 const getAllProducts = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, sort, categoryId, priceRange } = req.query;
+  const { page = 1, limit = 10, sort, categoryId, priceRange, search } = req.query;
 
   const pageNumber = Number(page) || 1;
   const limitNumber = Number(limit) || 10;
@@ -52,6 +52,14 @@ const getAllProducts = asyncHandler(async (req, res) => {
     isActive: true,
   };
 
+  if (search) {
+    const searchRegex = new RegExp(search, "i");
+    filter.$or = [
+      { name: searchRegex },
+      { description: searchRegex },
+    ];
+  }
+
   if (priceRange) {
     const [minPrice, maxPrice] = priceRange.split("-");
 
@@ -59,6 +67,13 @@ const getAllProducts = asyncHandler(async (req, res) => {
       $gte: Number(minPrice),
       $lte: Number(maxPrice),
     };
+  }
+
+  if (req.query.rating) {
+    const minRating = Number(req.query.rating);
+    if (!isNaN(minRating)) {
+      filter.avgRating = { $gte: minRating };
+    }
   }
 
   if (categoryId) {
@@ -96,6 +111,8 @@ const getAllProducts = asyncHandler(async (req, res) => {
   );
 });
 
+import { Rating } from "../models/rating.models.js";
+
 const getProductById = asyncHandler(async (req, res) => {
   const { productId } = req.params;
 
@@ -103,10 +120,35 @@ const getProductById = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Invalid product id");
   }
 
-  const products = await Product.findById(productId);
+  let products = await Product.findById(productId)
+    .populate("category", "name")
+    .populate("createdBy", "fullName email");
 
   if (!products) {
     throw new ApiError(404, "Product not found");
+  }
+
+  // Self-Healing: If ratings are 0, check if we missed any reviews
+  if (products.ratingCnt === 0) {
+    const reviewCount = await Rating.countDocuments({ product: productId });
+    if (reviewCount > 0) {
+      const stats = await Rating.aggregate([
+        { $match: { product: new mongoose.Types.ObjectId(productId) } },
+        {
+          $group: {
+            _id: "$product",
+            avgRating: { $avg: "$rating" },
+            ratingCnt: { $sum: 1 },
+          },
+        },
+      ]);
+
+      if (stats.length > 0) {
+        products.avgRating = stats[0].avgRating;
+        products.ratingCnt = stats[0].ratingCnt;
+        await products.save();
+      }
+    }
   }
 
   return res
@@ -172,7 +214,7 @@ const deleteProduct = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Invalid product id");
   }
 
-  const product = await Product.findOneAndDelete(
+  const product = await Product.findByIdAndUpdate(
     productId,
     { $set: { isActive: false } },
     { new: true }

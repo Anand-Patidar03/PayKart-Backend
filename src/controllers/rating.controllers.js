@@ -3,7 +3,7 @@ import { ApiError } from "../utils/ApiError.js";
 import { Rating } from "../models/rating.models.js";
 import { Product } from "../models/product.models.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
-import mongoose from "mongoose"; 
+import mongoose from "mongoose";
 
 const addReview = asyncHandler(async (req, res) => {
   const { productId } = req.params;
@@ -17,10 +17,17 @@ const addReview = asyncHandler(async (req, res) => {
     throw new ApiError(400, "All fields are required");
   }
 
-  const product = await Product.findById(productId);
-
   if (!product) {
     throw new ApiError(404, "Product not found");
+  }
+
+  const existingReview = await Rating.findOne({
+    user: req.user._id,
+    product: productId,
+  });
+
+  if (existingReview) {
+    throw new ApiError(400, "You have already reviewed this product");
   }
 
   const reviewProduct = await Rating.create({
@@ -32,6 +39,39 @@ const addReview = asyncHandler(async (req, res) => {
 
   if (!reviewProduct) {
     throw new ApiError(400, "product review not created");
+  }
+
+  const stats = await Rating.aggregate([
+    {
+      $match: {
+        product: new mongoose.Types.ObjectId(productId),
+      },
+    },
+    {
+      $group: {
+        _id: "$product",
+        avgRating: { $avg: "$rating" },
+        ratingCnt: { $sum: 1 },
+      },
+    },
+  ]);
+
+  console.log("DEBUG STATS for Product:", productId);
+  console.log("Stats Result:", JSON.stringify(stats, null, 2));
+
+  if (stats.length > 0) {
+    await Product.findByIdAndUpdate(productId, {
+      avgRating: stats[0].avgRating,
+      ratingCnt: stats[0].ratingCnt,
+    });
+    console.log("Updated Product with stats:", stats[0]);
+  } else {
+    
+    await Product.findByIdAndUpdate(productId, {
+      avgRating: rating,
+      ratingCnt: 1,
+    });
+    console.log("Updated Product with initial stats");
   }
 
   return res
@@ -145,7 +185,7 @@ const getProductReviews = asyncHandler(async (req, res) => {
   }
 
   const reviews = await Rating.find({ product: productId })
-    .populate("user", "name email")
+    .populate("user", "fullName email") 
     .sort({ createdAt: -1 });
 
   return res

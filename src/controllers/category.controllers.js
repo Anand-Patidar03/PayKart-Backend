@@ -18,7 +18,19 @@ const createCategory = asyncHandler(async (req, res) => {
   });
 
   if (existingCategory) {
-    throw new ApiError(409, "Category already exists");
+    if (existingCategory.isActive) {
+      throw new ApiError(409, "Category already exists");
+    } else {
+      
+      existingCategory.isActive = true;
+      existingCategory.description = description || existingCategory.description;
+      existingCategory.createdBy = req.user?._id;
+      await existingCategory.save();
+
+      return res
+        .status(200) 
+        .json(new ApiResponse(200, existingCategory, "Category reactivated successfully"));
+    }
   }
 
   const category = await Category.create({

@@ -3,13 +3,14 @@ import { ApiError } from "../utils/ApiError.js";
 import { Cart } from "../models/cart.models.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { Order } from "../models/order.models.js";
+import { Product } from "../models/product.models.js";
 import mongoose from "mongoose";
 
 const createOrder = asyncHandler(async (req, res) => {
   const { shippingAddress, paymentMethod } = req.body;
 
   const cart = await Cart.findOne({ user: req.user._id })
-  .populate("items.product");
+    .populate("items.product");
 
 
   if (!cart) {
@@ -21,8 +22,13 @@ const createOrder = asyncHandler(async (req, res) => {
   }
 
   const orderItems = [];
+  const validItems = [];
 
   for (const item of cart.items) {
+    if (!item.product) {
+    
+      continue;
+    }
     if (item.product.stock < item.quantity) {
       throw new ApiError(400, `Insufficient stock for ${item.product.name}`);
     }
@@ -32,6 +38,11 @@ const createOrder = asyncHandler(async (req, res) => {
       quantity: item.quantity,
       priceAtThatTime: item.priceAtThatTime,
     });
+    validItems.push(item);
+  }
+
+  if (orderItems.length === 0) {
+    throw new ApiError(400, "No valid items in cart to order");
   }
 
   const order = await Order.create({
@@ -50,7 +61,7 @@ const createOrder = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Order not created");
   }
 
-  for (const item of cart.items) {
+  for (const item of validItems) {
     item.product.stock -= item.quantity;
     await item.product.save();
   }
@@ -62,7 +73,7 @@ const createOrder = asyncHandler(async (req, res) => {
     .json(new ApiResponse(201, order, "Order created successfully"));
 });
 
-const getuserOrders = asyncHandler(async (req, res) => {
+const getUserOrders = asyncHandler(async (req, res) => {
   const orders = await Order.find({ user: req.user._id }).populate(
     "orderItems.product"
   );
@@ -157,7 +168,6 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
 
 const cancelOrder = asyncHandler(async (req, res) => {
   const { orderId } = req.params;
-  const { orderStatus } = req.body;
 
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
     throw new ApiError(400, "Invalid order id");
@@ -172,26 +182,32 @@ const cancelOrder = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Order not found");
   }
 
-
-  if (order.orderStatus === ("DELIVERED" || "CANCELLED")) {
-    throw new ApiError(404, "Order can not be CANCELLED");
+  if (["DELIVERED", "CANCELLED"].includes(order.orderStatus)) {
+    throw new ApiError(400, "Order cannot be CANCELLED");
   }
 
-  order.orderStatus = "CANCELLED"
-  order.cancelledAt = new Date()
+  order.orderStatus = "CANCELLED";
+  order.cancelledAt = new Date();
 
   await order.save();
 
+  
+  for (const item of order.orderItems) {
+    await Product.findByIdAndUpdate(item.product, {
+      $inc: { stock: item.quantity },
+    });
+  }
+
   return res
     .status(200)
-    .json(new ApiResponse(200, order, "order cancelled successfully"));
+    .json(new ApiResponse(200, order, "Order cancelled successfully"));
 });
 
 export {
   createOrder,
-  getuserOrders, 
+  getUserOrders,
   getOrderById,
   getAllOrders,
   updateOrderStatus,
-  cancelOrder
+  cancelOrder,
 };

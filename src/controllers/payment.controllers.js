@@ -4,118 +4,179 @@ import { Payment } from "../models/payment.models.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { Order } from "../models/order.models.js";
 import crypto from "crypto";
-import mongoose from "mongoose"
+import mongoose from "mongoose";
 
 const initiatePayment = asyncHandler(async (req, res) => {
   const { orderId } = req.params;
-  const { paymentProvider, currency = "INR" } = req.body;
-
-  if (!paymentProvider) {
-    throw new ApiError(400, "Invalid  or paymentProvider");
-  }
+  const { paymentProvider = "TEST", currency = "INR" } = req.body;
 
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
     throw new ApiError(400, "Invalid order id");
   }
 
-  const order = await Order.findOne({
-    _id: orderId,
-    user: req.user._id,
-  });
-
-  if (!order) {
-    throw new ApiError(404, "Order not found");
+  // ALLOWED GATEWAYS
+  const supportedGateways = ["RAZORPAY", "STRIPE", "PAYPAL", "PHONEPE", "TEST", "COD"];
+  if (!supportedGateways.includes(paymentProvider)) {
+    throw new ApiError(400, `Unsupported payment provider. Supported: ${supportedGateways.join(", ")}`);
   }
 
-  if (order.paymentStatus === "SUCCESS") {
-    throw new ApiError(404, "payment successed and completed");
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const order = await Order.findOne({
+      _id: orderId,
+      user: req.user._id,
+    }).session(session);
+
+    if (!order) {
+      throw new ApiError(404, "Order not found");
+    }
+
+    if (order.paymentStatus === "SUCCESS") {
+      res.status(200).json(new ApiResponse(200, {}, "Order is already paid"));
+      await session.abortTransaction();
+      return;
+    }
+
+    const existingPayment = await Payment.findOne({ order: order._id }).session(session);
+    if (existingPayment) {
+      // If pending, return existing.
+      if (existingPayment.status === "PENDING") {
+        await session.abortTransaction();
+        return res.status(200).json(new ApiResponse(200, existingPayment, "Payment already initiated"));
+      }
+    }
+
+    // Mock Provider ID generation for TEST/COD
+    let providerPaymentId = `pay_${crypto.randomBytes(8).toString("hex")}`;
+
+    // In a real app, you would call Razorpay/Stripe API here to get an order ID
+    if (paymentProvider === "COD") {
+      providerPaymentId = `cod_${orderId}`;
+    }
+
+    const payment = await Payment.create([{
+      user: req.user._id,
+      order: order._id,
+      amount: order.totalAmount,
+      status: paymentProvider === "COD" ? "PENDING" : "PENDING",
+      providerPaymentId: providerPaymentId,
+      paymentProvider,
+      currency,
+    }], { session });
+
+    order.paymentStatus = "PENDING";
+    await order.save({ session });
+
+    await session.commitTransaction();
+
+    return res
+      .status(201)
+      .json(new ApiResponse(201, payment[0], "Payment initiated successfully"));
+
+  } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    throw error;
+  } finally {
+    session.endSession();
   }
-
-  const gatWays = ["RAZORPAY", "STRIPE", "PAYPAL", "PHONEPE"];
-  if (!gatWays.includes(paymentProvider)) {
-    throw new ApiError(400, "Unsupported payment provider");
-  }
-
-  const isPayment = await Payment.findOne({ order: order._id });
-
-  if (isPayment) {
-    throw new ApiError(400, "Payment already initiated for this order");
-  }
-
-  const payment = await Payment.create({
-    user: req.user._id,
-    order: order._id,
-    amount: order.totalAmount,
-    status: "PENDING",
-    providerPaymentId,
-    paymentProvider,
-    currency,
-  });
-
-  if (!payment) {
-    throw new ApiError(404, "payment not created");
-  }
-
-  order.paymentStatus = "PENDING";
-
-  await order.save();
-
-  return res
-    .status(200)
-    .json(new ApiResponse(200, payment, "Payment initiated successfully"));
 });
 
 const verifyPayment = asyncHandler(async (req, res) => {
   const { orderId } = req.params;
   const { providerPaymentId, providerOrderId, signature } = req.body;
 
-  if (!providerPaymentId || !providerOrderId || !signature) {
-    throw new ApiError(400, "Invalid payment verification data");
-  }
-
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
     throw new ApiError(400, "Invalid order id");
   }
 
-  const payment = await Payment.findOne({
-    order: orderId,
-    user: req.user._id,
-    providerPaymentId,
-  });
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  if (!payment) {
-    throw new ApiError(404, "Payment record not found");
+  try {
+    const payment = await Payment.findOne({
+      order: orderId,
+      user: req.user._id,
+    }).session(session);
+
+    if (!payment) {
+      throw new ApiError(404, "Payment record not found");
+    }
+
+    if (payment.status === "SUCCESS") {
+      await session.abortTransaction();
+      return res.status(200).json(new ApiResponse(200, payment, "Payment already verified"));
+    }
+
+    let isValid = false;
+
+    if (payment.paymentProvider === "TEST") {
+      isValid = signature === "test_secret_key";
+      if (!isValid) throw new ApiError(400, "Invalid Test Signature (use 'test_secret_key')");
+
+    } else if (payment.paymentProvider === "COD") {
+
+      isValid = true;
+
+    } else {
+      let secretKey;
+
+      if (payment.paymentProvider === "RAZORPAY") {
+        secretKey = process.env.RAZORPAY_KEY_SECRET;
+
+      }
+
+      else {
+        throw new ApiError(400, "Unsupported payment provider for verification");
+      }
+
+      if (!secretKey) {
+        throw new ApiError(500, "Payment secret key not configured");
+      }
+
+      const body = `${providerOrderId}|${providerPaymentId}`;
+      const expectedSignature = crypto
+        .createHmac("sha256", secretKey)
+        .update(body)
+        .digest("hex");
+
+      isValid = expectedSignature === signature;
+    }
+
+    if (!isValid) {
+      payment.status = "FAILED";
+      await payment.save({ session });
+      await session.commitTransaction();
+      throw new ApiError(400, "Payment verification failed");
+    }
+
+
+    payment.status = "SUCCESS";
+    await payment.save({ session });
+
+    const order = await Order.findById(orderId).session(session);
+    order.paymentStatus = "SUCCESS";
+    order.isPaid = true;
+    order.paidAt = new Date();
+    await order.save({ session });
+
+    await session.commitTransaction();
+
+    return res
+      .status(200)
+      .json(new ApiResponse(200, payment, "Payment verified successfully"));
+
+  } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    throw error;
+  } finally {
+    session.endSession();
   }
-
-  if (payment.status === "SUCCESS") {
-    throw new ApiError(400, "Payment already verified");
-  }
-
-  const body = `${providerOrderId}|${providerPaymentId}`;
-
-  const expectedSignature = crypto
-    .createHmac("sha256", process.env.PAYMENT_SECRET_KEY)
-    .update(body)
-    .digest("hex");
-
-  if (expectedSignature !== signature) {
-    payment.status = "FAILED";
-    await payment.save();
-    throw new ApiError(400, "Payment verification failed");
-  }
-
-  payment.status = "SUCCESS";
-  await payment.save();
-
-  const order = await Order.findById(orderId);
-  order.paymentStatus = "SUCCESS";
-  order.isPaid = true;
-  order.paidAt = new Date();
-  await order.save();
-
-  return res
-    .status(200)
-    .json(new ApiResponse(200, payment, "Payment verified successfully"));
 });
 
 const getPaymentStatus = asyncHandler(async (req, res) => {
@@ -131,7 +192,7 @@ const getPaymentStatus = asyncHandler(async (req, res) => {
   });
 
   if (!payment) {
-    throw new ApiError(404, "payment not found");
+    throw new ApiError(404, "Payment not found");
   }
 
   return res
@@ -139,7 +200,7 @@ const getPaymentStatus = asyncHandler(async (req, res) => {
     .json(
       new ApiResponse(
         200,
-        { status: payment.status },
+        { status: payment.status, provider: payment.paymentProvider },
         "Payment status fetched successfully"
       )
     );

@@ -56,7 +56,14 @@ const productSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-
+    avgRating: {
+      type: Number,
+      default: 0,
+    },
+    ratingCnt: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );
