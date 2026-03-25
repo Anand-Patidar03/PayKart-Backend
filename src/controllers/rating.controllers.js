@@ -17,6 +17,7 @@ const addReview = asyncHandler(async (req, res) => {
     throw new ApiError(400, "All fields are required");
   }
 
+  const product = await Product.findById(productId);
   if (!product) {
     throw new ApiError(404, "Product not found");
   }
