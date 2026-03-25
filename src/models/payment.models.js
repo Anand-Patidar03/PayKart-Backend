@@ -14,7 +14,7 @@ const paymentSchema = new mongoose.Schema(
     },
     paymentProvider: {
       type: String,
-      enum : ["RAZORPAY", "STRIPE", "PAYPAL","PHONEPE"],
+      enum : ["RAZORPAY", "STRIPE", "PAYPAL", "PHONEPE", "TEST", "COD"],
       required: true,
       default : "PHONEPE",
       trim: true,
