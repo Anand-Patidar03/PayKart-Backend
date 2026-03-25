@@ -3,6 +3,10 @@ import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.models.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import jwt from "jsonwebtoken";
+import { OAuth2Client } from "google-auth-library";
+import crypto from "crypto";
+
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const generateAccessandRefreshToken = async function (userID) {
   try {
@@ -111,22 +115,89 @@ const loginUser = asyncHandler(async (req, res) => {
     );
 });
 
-const logoutUser = asyncHandler(async (req, res) => {
-  await User.findByIdAndUpdate(
-    req.user._id,
-    {
-      $set: {
-        refreshToken: undefined,
-      },
-    },
-    {
-      new: true,
-    }
-  );
+const googleLogin = asyncHandler(async (req, res) => {
+  const { credential } = req.body;
+
+  if (!credential) {
+    throw new ApiError(400, "Google credential is required");
+  }
+
+  const ticket = await client.verifyIdToken({
+    idToken: credential,
+    audience: process.env.GOOGLE_CLIENT_ID,
+  });
+
+  const payload = ticket.getPayload();
+  const { email, name, email_verified } = payload;
+
+  if (!email_verified) {
+    throw new ApiError(400, "Google email is not verified");
+  }
+
+  let user = await User.findOne({ email }).select("+password");
+
+  if (!user) {
+    const randomPassword = crypto.randomBytes(16).toString("hex");
+    user = await User.create({
+      fullName: name,
+      email,
+      password: randomPassword,
+      isEmailVerified: true,
+    });
+  }
+
+  const { accessToken, refreshToken } = await generateAccessandRefreshToken(user._id);
+  const loggedInUser = await User.findById(user._id).select("-password -refreshToken");
 
   const options = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: false,
+    sameSite: "lax",
+  };
+
+  return res
+    .status(200)
+    .cookie("accessToken", accessToken, options)
+    .cookie("refreshToken", refreshToken, options)
+    .json(
+      new ApiResponse(
+        200,
+        {
+          user: loggedInUser,
+          accessToken,
+          refreshToken,
+        },
+        "User successfully logged in with Google"
+      )
+    );
+});
+
+const logoutUser = asyncHandler(async (req, res) => {
+  const token = req.cookies?.accessToken || req.header("Authorization")?.replace("Bearer ", "");
+  
+  if (token) {
+    try {
+      const decodedToken = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+      await User.findByIdAndUpdate(
+        decodedToken._id,
+        {
+          $set: {
+            refreshToken: undefined,
+          },
+        },
+        {
+          new: true,
+        }
+      );
+    } catch (error) {
+      // Ignore token verification or user update errors on logout
+    }
+  }
+
+  const options = {
+    httpOnly: true,
+    secure: false,
+    sameSite: "lax",
   };
 
   return res
@@ -165,7 +236,8 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
 
   const options = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: false,
+    sameSite: "lax",
   };
 
   const { accessToken, newRefreshToken } = await generateAccessandRefreshToken(
@@ -252,6 +324,7 @@ const updateAccountDetail = asyncHandler(async (req, res) => {
 export {
   registerUser,
   loginUser,
+  googleLogin,
   logoutUser,
   refreshAccessToken,
   changeCurrentPassword,
