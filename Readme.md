@@ -6,7 +6,7 @@ PayKart is a full-stack e-commerce web application built with modern technologie
 
 ## 🚀 Live Demo
 
-* 🌐 Frontend: https://your-vercel-app.vercel.app
+* 🌐 Frontend: [https://your-vercel-app.vercel.app](https://pay-kart-frontend-y6zo.vercel.app/)
 * 🔗 Backend API: https://paykart-backend-1.onrender.com
 
 ---
