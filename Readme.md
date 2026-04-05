@@ -48,29 +48,6 @@ PayKart is a full-stack e-commerce web application built with modern technologie
 
 ---
 
-## 🔐 Environment Variables
-
-### Backend (`.env`)
-
-```
-PORT=7000
-MONGODB_URI=your_mongodb_uri
-ACCESS_TOKEN_SECRET=your_access_secret
-ACCESS_TOKEN_EXPIRY=1d
-REFRESH_TOKEN_SECRET=your_refresh_secret
-REFRESH_TOKEN_EXPIRY=10d
-CLOUDINARY_API_SECRET=your_cloudinary_secret
-```
-
----
-
-### Frontend (`.env`)
-
-```
-VITE_API_URL=https://paykart-backend-1.onrender.com
-VITE_GOOGLE_CLIENT_ID=your_google_client_id
-```
-
 ---
 
 ## ⚙️ Installation & Setup
@@ -78,7 +55,7 @@ VITE_GOOGLE_CLIENT_ID=your_google_client_id
 ### 1️⃣ Clone the repository
 
 ```
-git clone https://github.com/your-username/paykart.git
+git clone [ https://github.com/your-username/paykart.git](https://github.com/Anand-Patidar03/PayKart-Backend.git)
 cd paykart
 ```
 
